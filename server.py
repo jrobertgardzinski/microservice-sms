@@ -15,6 +15,16 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+SERVICE = "sms"
+
+def log(level, message):
+    """The stack's shared log line (observability/README.md in the aggregator repo): ISO
+    time, level, cid/trace placeholders (this stdlib stack sets neither), service, message."""
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
+    print(f"{stamp} {level:<5} [cid=-] [trace=-] {SERVICE} - {message}", flush=True)
+
+
 PROVIDER = os.environ.get("SMS_PROVIDER", "stub")
 # E.164-ish: a leading + and 8..15 digits. A phone number is a routing key, not free text.
 E164 = re.compile(r"^\+[1-9]\d{7,14}$")
@@ -32,7 +42,7 @@ def send(to, subject, body):
     if len(text) > MAX_LEN:
         raise ValueError(f"message too long ({len(text)} > {MAX_LEN})")
     if PROVIDER == "stub":
-        print(f"sms-stub: to {to}: {text[:60]!r}", flush=True)
+        log("INFO", f"stub delivery to {to}: {text[:60]!r}")
         return "stub-" + str(abs(hash((to, text))) % 10_000_000)
     raise ValueError(f"unknown SMS_PROVIDER: {PROVIDER}")   # real gateways plug in here
 
@@ -70,10 +80,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def log_message(self, fmt, *args):
-        print(f"sms: {self.command} {self.path}")
+        log("INFO", f"{self.command} {self.path}")
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8088"))
-    print(f"sms channel listening on {port} (provider={PROVIDER})")
+    log("INFO", f"sms channel listening on {port} (provider={PROVIDER})")
     ThreadingHTTPServer(("", port), Handler).serve_forever()
