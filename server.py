@@ -9,6 +9,7 @@ stack runs end to end with no telephony account. Point SMS_PROVIDER at a real ga
 and give it credentials to send for real; the wire contract the paddock speaks never changes.
 """
 
+import hmac
 import json
 import os
 import re
@@ -26,9 +27,23 @@ def log(level, message):
 
 
 PROVIDER = os.environ.get("SMS_PROVIDER", "stub")
+# The same guard the sibling mail service has had all along: only trusted callers may send. Without
+# it this endpoint takes a message from anything that can reach the port — today the compose network
+# (every container in the stack), and the README's own next step is "point SMS_PROVIDER at a real gateway
+# and give it credentials", at which point an unauthenticated endpoint becomes a paid-SMS pump
+# and a phishing channel ("Your sign-in code is ..." from the portal's own number).
+API_KEY = os.environ.get("SMS_API_KEY")
+# A request body this service has any business reading: every legitimate one is a short JSON object.
+MAX_BODY_BYTES = 8192
+
 # E.164-ish: a leading + and 8..15 digits. A phone number is a routing key, not free text.
 E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 MAX_LEN = 480   # a few concatenated SMS segments
+
+
+def masked(number):
+    """A number reduced to what an operator needs to match a support call: the last three digits."""
+    return "***" + number[-3:] if number and len(number) > 3 else "***"
 
 
 def send(to, subject, body):
@@ -42,7 +57,12 @@ def send(to, subject, body):
     if len(text) > MAX_LEN:
         raise ValueError(f"message too long ({len(text)} > {MAX_LEN})")
     if PROVIDER == "stub":
-        log("INFO", f"stub delivery to {to}: {text[:60]!r}")
+        # Metadata only. This log used to carry the first 60 characters of the message, and the
+        # message security sends is "Sign-in code: Your sign-in code is 123456" — 41 characters, so
+        # the whole one-time code fitted, next to the subscriber's full number. Promtail ships every
+        # container's stdout to Loki, where dev Grafana is an anonymous admin, so anyone with a
+        # browser could read other people's sign-in codes faster than the SMS arrives.
+        log("INFO", f"stub delivery to {masked(to)} ({len(text)} chars)")
         return "stub-" + str(abs(hash((to, text))) % 10_000_000)
     raise ValueError(f"unknown SMS_PROVIDER: {PROVIDER}")   # real gateways plug in here
 
@@ -59,8 +79,19 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/send":
             self._json(404, {"error": "not found"})
             return
+        if API_KEY and not hmac.compare_digest(self.headers.get("X-Api-Key", ""), API_KEY):
+            self._json(401, {"status": "UNAUTHORIZED"})
+            return
         try:
-            payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self._json(400, {"status": "BAD_REQUEST", "error": "invalid Content-Length"})
+            return
+        if length > MAX_BODY_BYTES:
+            self._json(413, {"status": "REJECTED", "error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(max(0, length)) or b"{}")
         except ValueError:
             self._json(400, {"status": "BAD_REQUEST", "error": "invalid JSON"})
             return
