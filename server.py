@@ -33,6 +33,15 @@ PROVIDER = os.environ.get("SMS_PROVIDER", "stub")
 # and give it credentials", at which point an unauthenticated endpoint becomes a paid-SMS pump
 # and a phishing channel ("Your sign-in code is ..." from the portal's own number).
 API_KEY = os.environ.get("SMS_API_KEY")
+# Fail-CLOSED once a provider is real. An absent key used to mean "let everyone in", which is the
+# wrong default for the branch that matters: the stub is a toy, but a configured gateway sends
+# paid messages on somebody's account. With a real provider and no key the service refuses to
+# start, the way the mail service refuses to start without MAIL_API_KEY — a deployment that forgot
+# the secret should not come up as an open relay.
+if PROVIDER != "stub" and not API_KEY:
+    raise SystemExit(
+        f"SMS_API_KEY is required when SMS_PROVIDER is not 'stub': refusing to start an unauthenticated"
+        f" gateway that sends for real")
 # A request body this service has any business reading: every legitimate one is a short JSON object.
 MAX_BODY_BYTES = 8192
 
