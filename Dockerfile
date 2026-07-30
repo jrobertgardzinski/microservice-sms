@@ -1,5 +1,5 @@
 # SMS channel — Python stdlib only, no dependencies. Stub-sends unless SMS_PROVIDER is set.
-FROM python:3.12-slim
+FROM python:3.14-slim
 WORKDIR /app
 COPY server.py .
 # Drop root, like the image encoder this service is modelled on. The divergence was an
